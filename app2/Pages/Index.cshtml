@@ -1,0 +1,361 @@
+﻿@page
+@model app2.Pages.IndexModel
+@{
+    ViewData["Title"] = "App2 - GIS Application";
+    Layout = "_Layout"; // Use the shared layout
+}
+
+<div class="container">
+    <h1 class="text-2xl font-bold text-center text-gray-800">App2 (GIS Application)</h1>
+    <p class="text-center text-gray-600">This app is embedded in App1. All communication is via <code>postMessage</code> and direct API calls to App1.</p>
+
+    <div id="status-display" class="message-info message-box">
+        Initializing App2...
+    </div>
+    <div id="error-display" class="message-error message-box">
+        <!-- Error messages will appear here -->
+    </div>
+    <div id="success-display" class="message-success message-box">
+        <!-- Success messages will appear here -->
+    </div>
+
+    <div class="flex items-center justify-between p-3 rounded-md border border-gray-300 bg-gray-50">
+        <span class="session-status-text text-gray-700">App2 Session Status: <span id="app2-session-status" class="font-bold text-red-600">Not Authenticated</span></span>
+        <span class="session-status-text text-gray-700">App1 Session Status: <span id="app1-session-status" class="font-bold text-gray-500">Checking...</span></span>
+    </div>
+
+    <div class="gis-map-area">
+        GIS Map Placeholder
+    </div>
+
+    <div class="flex flex-col gap-4">
+        <h2 class="text-xl font-semibold text-gray-800">Send GeoJSON to App1</h2>
+        <textarea id="geojson-input" class="geojson-input border border-gray-300 rounded-md p-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500" placeholder='Enter GeoJSON FeatureCollection here (e.g., {"type": "FeatureCollection", "features": [{"type": "Feature", "geometry": {"type": "Point", "coordinates": [102.0, 0.5]}, "properties": {"prop0": "value0"}}]})'></textarea>
+        <button id="send-geojson-btn" class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+            Send GeoJSON to App1
+        </button>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        // Ensure Inter font is loaded for consistent styling
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+
+        // --- Configuration ---
+        // IMPORTANT: Updated to match app1's actual running port (5137)
+        const APP1_ORIGIN = '@Model.App1Origin'; // From App2's backend config
+        const APP1_API_BASE_URL = `${APP1_ORIGIN}/api`; // Base URL for App1's API endpoints
+        const APP2_API_BASE_URL = '/api/app1-integration'; // Base URL for App2's own API endpoints
+
+        // --- DOM Elements ---
+        const statusDisplay = document.getElementById('status-display');
+        const errorDisplay = document.getElementById('error-display');
+        const successDisplay = document.getElementById('success-display');
+        const app2SessionStatusElem = document.getElementById('app2-session-status');
+        const app1SessionStatusElem = document.getElementById('app1-session-status');
+        const geojsonInput = document.getElementById('geojson-input');
+        const sendGeojsonBtn = document.getElementById('send-geojson-btn');
+
+        // --- App2 Internal State ---
+        let app2SessionValid = false; // Indicates if app2 has successfully authenticated/validated its session
+        let currentReferenceId = null; // The reference ID received from app1
+        let app1SessionCheckInterval = null; // Interval for checking app1 session validity
+
+        // --- Utility Functions ---
+
+        /**
+         * Displays a message in the UI.
+         * param {string} message The message to display.
+         * param {'info'|'success'|'error'} type The type of message (influences styling).
+         */
+        function showMessage(message, type = 'info') {
+            statusDisplay.style.display = 'none';
+            errorDisplay.style.display = 'none';
+            successDisplay.style.display = 'none';
+
+            let targetElem;
+            if (type === 'success') {
+                targetElem = successDisplay;
+                targetElem.classList.remove('message-error', 'message-info');
+                targetElem.classList.add('message-success');
+            } else if (type === 'error') {
+                targetElem = errorDisplay;
+                targetElem.classList.remove('message-success', 'message-info');
+                targetElem.classList.add('message-error');
+            } else { // 'info'
+                targetElem = statusDisplay;
+                targetElem.classList.remove('message-success', 'message-error');
+                targetElem.classList.add('message-info');
+            }
+            targetElem.textContent = message;
+            targetElem.style.display = 'block';
+        }
+
+        /**
+         * Parses URL query parameters.
+         * returns {Object} An object containing query parameters.
+         */
+        function getQueryParams() {
+            const params = {};
+            window.location.search.substring(1).split('&').forEach(pair => {
+                const [key, value] = pair.split('=');
+                params[decodeURIComponent(key)] = decodeURIComponent(value || '');
+            });
+            return params;
+        }
+
+        /**
+         * Validates the structure of a GeoJSON FeatureCollection.
+         * param {Object} geojson The GeoJSON object to validate.
+         * returns {boolean} True if valid, false otherwise.
+         */
+        function isValidGeoJSON(geojson) {
+            if (!geojson || typeof geojson !== 'object') return false;
+            if (geojson.type !== 'FeatureCollection') return false;
+            if (!Array.isArray(geojson.features)) return false;
+
+            for (const feature of geojson.features) {
+                if (!feature || typeof feature !== 'object') return false;
+                if (feature.type !== 'Feature') return false;
+                if (!feature.geometry || typeof feature.geometry !== 'object') return false;
+                // Add more specific checks for geometry type and coordinates if needed
+                if (!feature.geometry.type || !feature.geometry.coordinates) return false;
+            }
+            return true;
+        }
+
+        // --- App2 Core Logic ---
+
+        /**
+         * Initializes App2 upon loading.
+         * Retrieves referenceId and signals App2 backend to establish session.
+         */
+        async function initializeApp2() {
+            const params = getQueryParams();
+            currentReferenceId = params.referenceId;
+
+            if (!currentReferenceId) {
+                showMessage('Error: No Reference ID found in URL. App2 cannot initialize.', 'error');
+                console.error('App2: No Reference ID found in URL.');
+                return;
+            }
+
+            showMessage(`App2 initialized. Reference ID: ${currentReferenceId}. Attempting to establish session with App2 backend...`, 'info');
+            console.log('App2: Initialized with Reference ID:', currentReferenceId);
+
+            // Call app2's backend to establish the session directly
+            await establishApp2Session();
+        }
+
+        /**
+         * Calls App2's own backend to establish the session, which in turn
+         * handles OTT lookup and validation with App1.
+         */
+        async function establishApp2Session() {
+            try {
+                const response = await fetch(`${APP2_API_BASE_URL}/establish-session`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        // Inform App2 backend about App1's origin for the API call it needs to make
+                        // This header is picked up by App2's controller.
+                        'X-App1-Origin': APP1_ORIGIN
+                    },
+                    body: JSON.stringify({ referenceId: currentReferenceId })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    app2SessionValid = true;
+                    app2SessionStatusElem.textContent = 'Authenticated';
+                    app2SessionStatusElem.classList.remove('text-red-600');
+                    app2SessionStatusElem.classList.add('text-green-600');
+                    showMessage(`App2 session established. User: ${data.userId || 'Unknown'}`, 'success');
+                    console.log('App2: Session established successfully in App2 backend.');
+
+                    // Start periodic session checks with App1 after successful session establishment
+                    startApp1SessionCheck();
+                } else if (response.status === 409 && data.message.includes("Authentication token has already been used")) {
+                    // This means the token was already used, implying a session might have been established.
+                    // We can proceed to check App1's session status.
+                    app2SessionValid = true; // Assume session was established previously
+                    app2SessionStatusElem.textContent = 'Authenticated (Previously)';
+                    app2SessionStatusElem.classList.remove('text-red-600');
+                    app2SessionStatusElem.classList.add('text-yellow-600'); // Indicate re-authentication
+                    showMessage(`App2 session might have been established previously: ${data.message}. Checking App1 session...`, 'info');
+                    console.log('App2: OTT already used on second attempt, proceeding to check App1 session status.');
+                    startApp1SessionCheck(); // Proceed to check App1 session
+                }
+                else {
+                    app2SessionValid = false;
+                    app2SessionStatusElem.textContent = 'Failed';
+                    app2SessionStatusElem.classList.remove('text-green-600');
+                    app2SessionStatusElem.classList.add('text-red-600');
+                    showMessage(`App2: Session establishment failed: ${data.message || 'Unknown error.'}`, 'error');
+                    console.error('App2: Session establishment failed:', data.message);
+                    stopApp1SessionCheck();
+                }
+
+            } catch (error) {
+                app2SessionValid = false;
+                app2SessionStatusElem.textContent = 'Failed';
+                app2SessionStatusElem.classList.remove('text-green-600');
+                app2SessionStatusElem.classList.add('text-red-600');
+                showMessage(`App2: Error during session establishment: ${error.message}. Please try refreshing App1.`, 'error');
+                console.error('App2: Error during session establishment:', error);
+                stopApp1SessionCheck();
+            }
+
+            // Signal back to app1 (parent iframe) about the final validation status
+            window.parent.postMessage({
+                type: 'app2ValidationStatus',
+                success: app2SessionValid,
+                message: app2SessionValid ? 'Session established.' : 'Session establishment failed.'
+            }, APP1_ORIGIN);
+        }
+
+
+        /**
+         * Periodically checks App1's session status.
+         */
+        function startApp1SessionCheck() {
+            // Clear any existing interval to prevent duplicates
+            if (app1SessionCheckInterval) {
+                clearInterval(app1SessionCheckInterval);
+            }
+
+            // Check every 30 seconds (adjust as needed)
+            app1SessionCheckInterval = setInterval(async () => {
+                if (!currentReferenceId) {
+                    console.warn('App2: Cannot check App1 session status without a Reference ID.');
+                    stopApp1SessionCheck();
+                    return;
+                }
+
+                console.log(`App2: Checking App1 session status for ReferenceId: ${currentReferenceId}`); // ADDED LOG
+
+                try {
+                    const response = await fetch(`${APP1_API_BASE_URL}/app2/session-status?referenceId=${currentReferenceId}`);
+                    const data = await response.json();
+
+                    if (response.ok && data.isValid) {
+                        app1SessionStatusElem.textContent = 'Valid';
+                        app1SessionStatusElem.classList.remove('text-red-600', 'text-gray-500');
+                        app1SessionStatusElem.classList.add('text-green-600');
+                        console.log('App2: App1 session is still valid.');
+                    } else {
+                        app1SessionStatusElem.textContent = 'Expired/Invalid';
+                        app1SessionStatusElem.classList.remove('text-green-600', 'text-gray-500');
+                        app1SessionStatusElem.classList.add('text-red-600');
+                        showMessage(`App2: App1 session is no longer valid. ${data.message || ''} Please refresh App1.`, 'error');
+                        console.warn('App2: App1 session expired or invalid. App2 functionality might be limited.');
+                        app2SessionValid = false; // Mark app2 session as invalid if app1's is
+                        app2SessionStatusElem.textContent = 'Expired';
+                        app2SessionStatusElem.classList.remove('text-green-600');
+                        app2SessionStatusElem.classList.add('text-red-600');
+                        stopApp1SessionCheck();
+                    }
+                } catch (error) {
+                    app1SessionStatusElem.textContent = 'Error Checking';
+                    app1SessionStatusElem.classList.remove('text-green-600');
+                    app1SessionStatusElem.classList.add('text-red-600');
+                    showMessage(`App2: Error checking App1 session status: ${error.message}`, 'error');
+                    console.error('App2: Error checking App1 session:', error);
+                    // Do not stop interval immediately, retry on next tick.
+                    // If consistent errors, consider stopping.
+                }
+            }, 30000); // 30 seconds
+            console.log('App2: Started periodic App1 session check.');
+        }
+
+        /**
+         * Stops the periodic App1 session check.
+         */
+        function stopApp1SessionCheck() {
+            if (app1SessionCheckInterval) {
+                clearInterval(app1SessionCheckInterval);
+                app1SessionCheckInterval = null;
+                console.log('App2: Stopped periodic App1 session check.');
+            }
+        }
+
+        /**
+         * Sends GeoJSON data to App1.
+         */
+        sendGeojsonBtn.addEventListener('click', async () => {
+            if (!app2SessionValid) {
+                showMessage('App2: Cannot send GeoJSON. Session not authenticated or expired. Please re-authenticate via App1.', 'error');
+                return;
+            }
+            if (!currentReferenceId) {
+                showMessage('App2: Missing Reference ID. Cannot send GeoJSON.', 'error');
+                return;
+            }
+
+            let geojsonData;
+            try {
+                // Get the raw JSON string from the textarea
+                const rawGeoJsonString = geojsonInput.value;
+                geojsonData = JSON.parse(rawGeoJsonString); // Parse it to validate and then stringify again
+
+                if (!isValidGeoJSON(geojsonData)) { // Validate the parsed object
+                    throw new Error('Invalid GeoJSON FeatureCollection structure.');
+                }
+                // We will send the raw string to App1, so re-stringify to ensure no formatting issues
+                geojsonData = rawGeoJsonString; // Use the original raw string to send
+            } catch (e) {
+                showMessage(`App2: Invalid GeoJSON format: ${e.message}. Please enter a valid GeoJSON FeatureCollection.`, 'error');
+                return;
+            }
+
+            showMessage('App2: Sending GeoJSON data to App1...', 'info');
+
+            try {
+                const response = await fetch(`${APP1_API_BASE_URL}/geojson/save`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        referenceId: currentReferenceId,
+                        RawGeoJsonData: geojsonData // Changed property name to RawGeoJsonData
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    console.log('App2: GeoJSON sent successfully to App1.');
+                    showMessage(`GeoJSON saved successfully!`, 'success'); // Update App2's own UI
+                    // Send success message to App1 for its UI update
+                    window.parent.postMessage({ type: 'geojsonSaved', referenceId: currentReferenceId, message: data.message }, APP1_ORIGIN);
+                    // Clear the input after successful send
+                    geojsonInput.value = '';
+                } else {
+                    console.error('App2: Failed to send GeoJSON to App1:', data.message);
+                    showMessage(`App2: Failed to send GeoJSON: ${data.message || 'Unknown error.'}`, 'error'); // Update App2's own UI
+                    // Send error message to App1 for its UI update
+                    window.parent.postMessage({ type: 'geojsonSaveError', message: data.message || 'Unknown error during save.' }, APP1_ORIGIN);
+                }
+            } catch (error) {
+                console.error('App2: Error sending GeoJSON:', error);
+                showMessage(`App2: Error sending GeoJSON: ${error.message}`, 'error'); // Update App2's own UI
+                // Send error message to App1 for its UI update
+                window.parent.postMessage({ type: 'geojsonSaveError', message: `Network error: ${error.message}` }, APP1_ORIGIN);
+            }
+        });
+
+        // --- Initialize App2 when the DOM is fully loaded ---
+        document.addEventListener('DOMContentLoaded', initializeApp2);
+    </script>
+}

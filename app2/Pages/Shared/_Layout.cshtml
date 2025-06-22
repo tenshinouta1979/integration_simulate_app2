@@ -1,0 +1,78 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"] - app2</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Inter font from Google Fonts */
+        /* import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap'); */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* Light gray background */
+        }
+        .container {
+            max-width: 90%;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .message-box {
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            display: none; /* Hidden by default */
+        }
+        .message-success {
+            background-color: #d1fae5; /* Green-100 */
+            color: #065f46; /* Green-800 */
+        }
+        .message-error {
+            background-color: #fee2e2; /* Red-100 */
+            color: #991b1b; /* Red-800 */
+        }
+        .message-info {
+            background-color: #e0f2fe; /* Blue-100 */
+            color: #064e7b; /* Blue-800 */
+        }
+        .geojson-input {
+            min-height: 150px;
+            resize: vertical;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.875rem;
+        }
+        .session-status-text {
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+        /* Styling for the GIS map area - very basic, just a placeholder */
+        .gis-map-area {
+            background-color: #e2e8f0; /* Gray-200 */
+            border: 1px solid #cbd5e1; /* Gray-300 */
+            height: 300px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #4b5563; /* Gray-700 */
+            font-size: 1.2rem;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 antialiased">
+    <div class="min-h-screen flex flex-col">
+        <main role="main" class="flex-grow">
+            @RenderBody()
+        </main>
+    </div>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>
